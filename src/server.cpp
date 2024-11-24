@@ -1,10 +1,21 @@
+#include "respone_header.hpp"
 #include <arpa/inet.h>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <netinet/in.h>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+bool ends_with(const std::string &value, const std::string &suffix) {
+  if (suffix.size() > value.size())
+    return false;
+  return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
+}
 
 class Server {
 public:
@@ -20,15 +31,15 @@ public:
 private:
   static int SERVER_SOCKET;
   void bind_server(const std::string &ip, int port);
+  std::string generate_response(const unsigned int &status,
+                                const std::string &content = "",
+                                const std::string &content_type = "text/html");
+  std::string get_content_type(const std::string &path);
   std::string evaluate_request(const std::string &req);
-  std::string get_request(const std::string &req, const std::string &dir,
-                          const std::string &version);
-  std::string post_request(const std::string &req, const std::string &dir,
-                           const std::string &version);
-  std::string delete_request(const std::string &req, const std::string &dir,
-                             const std::string &version);
-  std::string head_request(const std::string &req, const std::string &dir,
-                           const std::string &version);
+  std::string get_request(const std::string &path);
+  std::string post_request(const std::string &req, const std::string &path);
+  std::string delete_request(const std::string &req, const std::string &path);
+  std::string head_request(const std::string &path);
 };
 
 int Server::SERVER_SOCKET = -1;
@@ -108,7 +119,7 @@ void Server::run() {
     }
 
     // Recieve request here
-    char buffer[1024];
+    char buffer[2048];
     int was_successful = recv(client_socket, &buffer, sizeof(buffer), 0);
     if (was_successful == -1) {
       std::cerr << "[ERROR] Failed to receive client request. errno: " << errno
@@ -119,8 +130,8 @@ void Server::run() {
       };
       close(client_socket);
       continue;
-    } else if (was_successful >= 1024) {
-      std::cerr << "[ERROR] The client request is bigger than 1KB\n";
+    } else if (was_successful >= 2048) {
+      std::cerr << "[ERROR] The client request is bigger than 2KB\n";
       continue;
     }
 
@@ -142,72 +153,140 @@ void Server::run() {
   return;
 }
 
-std::string Server::evaluate_request(const std::string &req) {
-  std::cout << "=============== Request ===============\n" << req << "\n";
+std::string Server::generate_response(const unsigned int &response_code,
+                                      const std::string &content,
+                                      const std::string &content_type) {
 
-  std::string res = "HTTP/1.1 501 Not Implemented\r\n";
+  std::ostringstream ss;
+  ss << "HTTP/1.1 " << get_response(response_code) << "\r\n";
+  if (content.length() != 0) {
+    ss << "Content-Type: " << content_type << "\r\n";
+    ss << "Content-Length: " << content.length() << "\r\n";
+    ss << "\r\n";
+    ss << content;
+  }
+
+  return ss.str();
+}
+
+std::string Server::get_content_type(const std::string &path) {
+  if (ends_with(path, ".html"))
+    return "text/html";
+  else if (ends_with(path, ".css"))
+    return "text/css";
+  else if (ends_with(path, ".js"))
+    return "application/javascript";
+  else if (ends_with(path, ".png"))
+    return "image/png";
+  else if (ends_with(path, ".jpg") || ends_with(path, ".jpeg"))
+    return "image/jpeg";
+  else if (ends_with(path, ".gif"))
+    return "image/gif";
+  return "application/octet-stream";
+}
+
+std::string Server::evaluate_request(const std::string &req) {
+
+  // NOTE: This is a debug print
+
+  /*std::cout << "=============== Request ===============\n" << req << "\n";*/
 
   std::istringstream request_stream(req);
-  std::string request_method, directory, http_version;
+  std::string request_method, path;
 
   // Read the first line from the request stream
-  std::string bad_req = "HTTP/1.1 400 Bad Request\r\n";
-  if (!(std::getline(request_stream, request_method, ' ')) ||
-      !(std::getline(request_stream, directory, ' ')) ||
-      !(std::getline(request_stream, http_version)))
-    return bad_req;
+  if (!std::getline(request_stream, request_method, ' ') ||
+      !std::getline(request_stream, path, ' '))
+    return this->generate_response(400);
+
+  if (path == "/")
+    path = "/index.html";
+  path = "." + path;
+
+  std::string res = this->generate_response(501);
 
   if (request_method == "GET") {
-    res = this->get_request(req, directory, http_version);
+    res = this->get_request(path);
   } else if (request_method == "POST") {
-    res = this->post_request(req, directory, http_version);
+    res = this->post_request(req, path);
   } else if (request_method == "DELETE") {
-    res = this->delete_request(req, directory, http_version);
+    res = this->delete_request(req, path);
   } else if (request_method == "HEAD") {
-    res = this->head_request(req, directory, http_version);
+    res = this->head_request(path);
   } else {
-    std::cerr
-        << "[ERROR] This HTTP server only supports GET, POST, DELETE and HEAD "
-           "requests until now. The request's type was "
-        << request_method << "\n";
+    std::cerr << "[ERROR] This HTTP server only supports GET, POST, DELETE "
+                 "and HEAD "
+                 "requests until now. The request's type was "
+              << request_method << "\n";
   }
+
+  std::cout << "[SENDING] " << res.substr(0, res.find("\n")) << "\n";
 
   return res;
 }
 
-std::string Server::get_request(const std::string &req, const std::string &dir,
-                                const std::string &version) {
-  // Handle GET request
-  /*std::filesystem::is_directory(req);*/
-  std::string httpResponse = "HTTP/1.1 200 OK\r\n"
-                             "Content-Type: text/html\r\n"
-                             "Content-Length: 13\r\n"
-                             "\r\n"
-                             "Hello, World!";
+std::string Server::get_request(const std::string &path) {
 
-  return httpResponse;
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return this->generate_response(
+        404, "<html><body><h1>404 Not Found</h1></body></html>");
+  }
+
+  // TODO: check if user is allowed to open the file.
+
+  std::ostringstream ss;
+  ss << file.rdbuf();
+
+  file.close();
+
+  return this->generate_response(200, ss.str(), get_content_type(path));
 }
 
-std::string Server::post_request(const std::string &req, const std::string &dir,
-                                 const std::string &version) {
-
-  std::string httpResponse = "HTTP/1.1 200 OK\r\n";
-
-  return httpResponse;
+std::string Server::post_request(const std::string &req,
+                                 const std::string &path) {
+  return this->generate_response(200);
 }
 
 std::string Server::delete_request(const std::string &req,
-                                   const std::string &dir,
-                                   const std::string &version) {
-  std::string httpResponse = "HTTP/1.1 200 OK\r\n";
-
-  return httpResponse;
+                                   const std::string &path) {
+  return this->generate_response(200);
 }
 
-std::string Server::head_request(const std::string &req, const std::string &dir,
-                                 const std::string &version) {
+std::string Server::head_request(const std::string &path) {
 
-  std::string httpResponse = "HTTP/1.1 200 OK\r\n";
+  // Check if the file exists
+  if (!std::filesystem::exists(path)) {
+    return this->generate_response(404);
+  }
 
-  return httpResponse;
+  // Get the last change date of the resource
+  struct stat result;
+  if (stat(path.c_str(), &result) != 0) {
+    return this->generate_response(404);
+  }
+
+  std::time_t now = std::time(NULL);
+  std::tm now_time;
+  gmtime_r(&now, &now_time);
+
+  std::time_t mod_time = result.st_mtime;
+  std::tm gmt_time;
+  gmtime_r(&mod_time, &gmt_time);
+
+  std::string content_type = get_content_type(path);
+
+  auto file_size = result.st_size;
+
+  std::ostringstream ss;
+  ss << "HTTP/1.1 200 OK\r\n";
+  ss << "Content-Type: " << content_type << "\r\n";
+  ss << "Content-Length: " << file_size << "\r\n";
+  ss << "Date: " << std::put_time(&now_time, "%a, %d %b %Y %H:%M:%S GMT")
+     << "\r\n";
+  ss << "Last-Modified: "
+     << std::put_time(&gmt_time, "%a, %d %b %Y %H:%M:%S GMT") << "\r\n";
+  ss << "\r\n";
+
+  return ss.str();
 }
