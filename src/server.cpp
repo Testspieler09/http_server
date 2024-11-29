@@ -11,11 +11,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// NOTE: Some helper functions
+
 bool ends_with(const std::string &value, const std::string &suffix) {
   if (suffix.size() > value.size())
     return false;
   return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
 }
+
+// NOTE: Start of the server class
 
 class Server {
 public:
@@ -38,7 +42,8 @@ private:
   std::string evaluate_request(const std::string &req);
   std::string get_request(const std::string &path);
   std::string post_request(const std::string &req, const std::string &path);
-  std::string delete_request(const std::string &req, const std::string &path);
+  std::string put_request(const std::string &req, const std::string &path);
+  std::string delete_request(const std::string &path);
   std::string head_request(const std::string &path);
 };
 
@@ -156,7 +161,6 @@ void Server::run() {
 std::string Server::generate_response(const unsigned int &response_code,
                                       const std::string &content,
                                       const std::string &content_type) {
-
   std::ostringstream ss;
   ss << "HTTP/1.1 " << get_response(response_code) << "\r\n";
   if (content.length() != 0) {
@@ -209,8 +213,10 @@ std::string Server::evaluate_request(const std::string &req) {
     res = this->get_request(path);
   } else if (request_method == "POST") {
     res = this->post_request(req, path);
+  } else if (request_method == "PUT") {
+    res = this->put_request(req, path);
   } else if (request_method == "DELETE") {
-    res = this->delete_request(req, path);
+    res = this->delete_request(path);
   } else if (request_method == "HEAD") {
     res = this->head_request(path);
   } else {
@@ -233,7 +239,7 @@ std::string Server::get_request(const std::string &path) {
         404, "<html><body><h1>404 Not Found</h1></body></html>");
   }
 
-  // TODO: check if user is allowed to open the file.
+  // WARN: No check if user is allowed to open / recieve the file / data.
 
   std::ostringstream ss;
   ss << file.rdbuf();
@@ -245,19 +251,75 @@ std::string Server::get_request(const std::string &path) {
 
 std::string Server::post_request(const std::string &req,
                                  const std::string &path) {
-  return this->generate_response(200);
+
+  // WARN: No check if the Content-Type is equal to the path / filetype
+
+  // NOTE: This POST request does not support append operations
+
+  if (std::filesystem::exists(path)) {
+    return this->generate_response(409, "File already exist.");
+  }
+
+  std::string body;
+
+  std::string::size_type body_pos = req.find("\r\n\r\n");
+  if (body_pos != std::string::npos) {
+    body = req.substr(body_pos + 4);
+  } else {
+    return this->generate_response(400, "Missing Body");
+  }
+
+  std::ofstream file(path);
+  if (!file.is_open()) {
+    return this->generate_response(500, "Could not write to file");
+  }
+  file << body;
+  file.close();
+
+  return this->generate_response(201);
 }
 
-std::string Server::delete_request(const std::string &req,
-                                   const std::string &path) {
-  return this->generate_response(200);
+std::string Server::put_request(const std::string &req,
+                                const std::string &path) {
+  std::string body;
+
+  std::string::size_type body_pos = req.find("\r\n\r\n");
+  if (body_pos != std::string::npos) {
+    body = req.substr(body_pos + 4);
+  } else {
+    return this->generate_response(400, "Missing Body");
+  }
+
+  std::ofstream file(path);
+  if (!file.is_open()) {
+    return this->generate_response(500, "Could not write to file");
+  }
+  file << body;
+  file.close();
+
+  return this->generate_response(201);
+}
+
+std::string Server::delete_request(const std::string &path) {
+
+  // WARN: No check if the user is allowed to delete the resource
+
+  if (!std::filesystem::exists(path)) {
+    return this->generate_response(404, "File does not exist.");
+  }
+
+  if (!std::filesystem::remove(path)) {
+    return this->generate_response(500);
+  }
+
+  return this->generate_response(204);
 }
 
 std::string Server::head_request(const std::string &path) {
 
   // Check if the file exists
   if (!std::filesystem::exists(path)) {
-    return this->generate_response(404);
+    return this->generate_response(404, "File does not exist");
   }
 
   // Get the last change date of the resource
@@ -290,3 +352,5 @@ std::string Server::head_request(const std::string &path) {
 
   return ss.str();
 }
+
+// NOTE: End of the server class

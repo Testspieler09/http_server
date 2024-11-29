@@ -24,7 +24,8 @@ private:
   std::string evaluate_request(const std::string &req);
   std::string get_request(const std::string &path);
   std::string post_request(const std::string &req, const std::string &path);
-  std::string delete_request(const std::string &req, const std::string &path);
+  std::string put_request(const std::string &req, const std::string &path);
+  std::string delete_request(const std::string &path);
   std::string head_request(const std::string &path);
 };
 
