@@ -1,12 +1,14 @@
+#include "auth.hpp"
+#include "file_append.hpp"
 #include "respone_header.hpp"
 #include <arpa/inet.h>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <netinet/in.h>
 #include <sstream>
-#include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -17,6 +19,21 @@ bool ends_with(const std::string &value, const std::string &suffix) {
   if (suffix.size() > value.size())
     return false;
   return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
+}
+
+std::string to_lower(const std::string &str) {
+  std::string lower_str = str;
+  std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return lower_str;
+}
+
+std::string trim(const std::string &str) {
+  const char *whitespace = " \t\n\r\f\v";
+  std::string trimmed = str;
+  trimmed.erase(trimmed.find_last_not_of(whitespace) + 1);
+  trimmed.erase(0, trimmed.find_first_not_of(whitespace));
+  return trimmed;
 }
 
 // NOTE: Start of the server class
@@ -39,6 +56,9 @@ private:
                                 const std::string &content = "",
                                 const std::string &content_type = "text/html");
   std::string get_content_type(const std::string &path);
+  std::unordered_map<std::string, std::string>
+  parse_headers(const std::string &req);
+  std::pair<int, int> get_append_position(const std::string &body);
   std::string evaluate_request(const std::string &req);
   std::string get_request(const std::string &path);
   std::string post_request(const std::string &req, const std::string &path);
@@ -174,12 +194,16 @@ std::string Server::generate_response(const unsigned int &response_code,
 }
 
 std::string Server::get_content_type(const std::string &path) {
-  if (ends_with(path, ".html"))
+  if (ends_with(path, ".txt"))
+    return "text/plain";
+  else if (ends_with(path, ".html") || ends_with(path, ".htm"))
     return "text/html";
   else if (ends_with(path, ".css"))
     return "text/css";
   else if (ends_with(path, ".js"))
     return "application/javascript";
+  else if (ends_with(path, ".xml"))
+    return "text/xml";
   else if (ends_with(path, ".png"))
     return "image/png";
   else if (ends_with(path, ".jpg") || ends_with(path, ".jpeg"))
@@ -187,6 +211,50 @@ std::string Server::get_content_type(const std::string &path) {
   else if (ends_with(path, ".gif"))
     return "image/gif";
   return "application/octet-stream";
+}
+
+std::unordered_map<std::string, std::string>
+Server::parse_headers(const std::string &req) {
+  std::unordered_map<std::string, std::string> headers;
+  std::istringstream stream(req);
+  std::string line;
+
+  // Skip the request line
+  std::getline(stream, line);
+
+  // Parse headers
+  while (std::getline(stream, line) && line != "\r") {
+    std::string::size_type pos = line.find(": ");
+    if (pos != std::string::npos) {
+      std::string key = to_lower(line.substr(0, pos));
+      std::string value = trim(line.substr(pos + 2));
+      headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+std::pair<int, int>
+Server::get_append_position(const std::string &header_values) {
+  int line = -1; // Default value for EOF
+  int pos = -1;  // Default value for EOL
+
+  std::size_t idx_line = header_values.find("line=");
+  std::size_t idx_pos = header_values.find("pos=");
+
+  if (idx_line != std::string::npos) {
+    std::size_t end_idx = header_values.find(' ', idx_line);
+    if (end_idx == std::string::npos) {
+      end_idx = header_values.length();
+    }
+    line = std::stoi(header_values.substr(idx_line + 5, end_idx));
+  }
+  if (idx_pos != std::string::npos) {
+    pos = std::stoi(header_values.substr(idx_pos + 4));
+  }
+
+  std::cout << line << ", " << pos << "\n";
+  return {line, pos};
 }
 
 std::string Server::evaluate_request(const std::string &req) {
@@ -239,7 +307,11 @@ std::string Server::get_request(const std::string &path) {
         404, "<html><body><h1>404 Not Found</h1></body></html>");
   }
 
-  // WARN: No check if user is allowed to open / recieve the file / data.
+  // NOTE: Simple auth with a server-side whitelist / no user profiles
+  if (!access_allowed(path)) {
+    return this->generate_response(
+        403, "The file is not contained in the server's whitelist");
+  }
 
   std::ostringstream ss;
   ss << file.rdbuf();
@@ -252,12 +324,20 @@ std::string Server::get_request(const std::string &path) {
 std::string Server::post_request(const std::string &req,
                                  const std::string &path) {
 
-  // WARN: No check if the Content-Type is equal to the path / filetype
+  if (!allowed_to_post_put(path)) {
+    return this->generate_response(
+        403, "The file is not contained in the server's whitelist");
+  }
 
-  // NOTE: This POST request does not support append operations
-
-  if (std::filesystem::exists(path)) {
-    return this->generate_response(409, "File already exist.");
+  std::unordered_map<std::string, std::string> headers = parse_headers(req);
+  if (headers.find("content-type") != headers.end()) {
+    std::string content_type = headers["content-type"];
+    if (content_type != this->get_content_type(path)) {
+      return this->generate_response(
+          415, "The Content-Type header and the filepath do not match");
+    }
+  } else {
+    return this->generate_response(400, "Missing Content-Type header");
   }
 
   std::string body;
@@ -267,6 +347,23 @@ std::string Server::post_request(const std::string &req,
     body = req.substr(body_pos + 4);
   } else {
     return this->generate_response(400, "Missing Body");
+  }
+
+  int line = -1, pos = -1;
+  std::string append_pos =
+      headers["append-position"]; // Assuming 'Append-Position:
+                                  // line=<line>,pos=<pos>' is sent in headers
+  if (!append_pos.empty()) {
+    std::pair<int, int> pos_info = get_append_position(append_pos);
+    line = pos_info.first;
+    pos = pos_info.second;
+  }
+  if (std::filesystem::exists(path)) {
+    if (append_to_file(body, path, line, pos)) {
+      return this->generate_response(201, "Successfully appended to file");
+    } else {
+      return this->generate_response(500, "Failed to append to file");
+    }
   }
 
   std::ofstream file(path);
@@ -302,7 +399,9 @@ std::string Server::put_request(const std::string &req,
 
 std::string Server::delete_request(const std::string &path) {
 
-  // WARN: No check if the user is allowed to delete the resource
+  if (!allowed_to_delete(path)) {
+    return this->generate_response(403, "Not allowed to delete the file");
+  }
 
   if (!std::filesystem::exists(path)) {
     return this->generate_response(404, "File does not exist.");
