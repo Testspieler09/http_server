@@ -5,7 +5,7 @@
 
 int main(int argc, char *argv[]) {
 
-  argparse::ArgumentParser program("HTTP-Server", "HTTPServer v0.0.0");
+  argparse::ArgumentParser program("HTTP-Server", "HTTPServer v1.0.0");
 
   program.add_argument("-i", "--ipaddress")
       .help("The IP-Address of the HTTP-Server")
