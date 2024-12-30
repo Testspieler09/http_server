@@ -31,6 +31,8 @@ bool load_list(const std::string &list_file, const std::string &section,
   return true;
 }
 
+// NOTE: Implementation split into different functions, as the implementation
+// might be different for the requests in the future
 bool access_allowed(const std::string &filename) {
   std::unordered_set<std::string> whitelist;
   if (!load_list(LIST_FILE, "whitelist", whitelist)) {
@@ -50,10 +52,10 @@ bool allowed_to_delete(const std::string &filename) {
 }
 
 bool allowed_to_post_put(const std::string &filename) {
-  std::unordered_set<std::string> deletelist;
-  if (!load_list(LIST_FILE, "post_put_list", deletelist)) {
+  std::unordered_set<std::string> post_put_list;
+  if (!load_list(LIST_FILE, "post_put_list", post_put_list)) {
     return false;
   }
 
-  return deletelist.find(filename) != deletelist.end();
+  return post_put_list.find(filename) != post_put_list.end();
 }
